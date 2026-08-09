@@ -1,0 +1,32 @@
+name: Delta Exchange India Scanner Bot
+
+on:
+  schedule:
+    # First hour (7:00 AM - 7:45 AM IST / 1:30 AM - 1:45 AM UTC)
+    - cron: '33,48 1 * * *'
+    # Main day block (8:00 AM - 3:30 PM IST / 2:30 AM - 10:00 AM UTC)
+    - cron: '3,18,33,48 2-9 * * *'
+    # Final handover run (3:30 PM IST / 10:00 AM UTC)
+    - cron: '3 10 * * *'
+  # Allows you to test it manually anytime from the Actions tab
+  workflow_dispatch:
+
+jobs:
+  run-scanner:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ccxt pandas requests
+
+      - name: Run Scanner Script
+        run: python main.py

@@ -349,6 +349,14 @@ class Scanner:
 
     def evaluate(self, symbol, early=False):
         a, c = self.a, self.cache.get(symbol, {})
+        
+        # Fetch missing timeframes on the fly
+        missing = [tf for tf in TIMEFRAMES if tf not in c or len(c[tf]) < 60]
+        if missing:
+            for tf in missing:
+                self.refresh_tf(symbol, tf, keep_forming=early)
+            c = self.cache.get(symbol, {})
+
         if any(tf not in c for tf in TIMEFRAMES):
             return []
         df15 = c["15m"]
@@ -445,7 +453,8 @@ def wait_until(dt):
 # ------------------------------------------------------------------ run
 def scan_all(scanner, symbols, dry_run, early=False, verbose=False):
     hits = 0
-    for s in symbols:
+    t0 = time.time()
+    for i, s in enumerate(symbols, 1):
         if verbose:
             print(scanner.status(s))
         try:
@@ -458,6 +467,8 @@ def scan_all(scanner, symbols, dry_run, early=False, verbose=False):
             print("SIGNAL:", json.dumps(sig, default=str))
             if not dry_run:
                 notify_telegram(sig)
+        if i % 25 == 0:
+            print(f"  ... {i}/{len(symbols)} scanned ({time.time() - t0:.0f}s)")
     return hits
 
 
@@ -485,6 +496,43 @@ def early_poll(scanner, symbols, args, until):
         time.sleep(max(0, min(args.poll - took, remaining)))
 
 
+# def run(args):
+#     exchange = build_exchange()
+#     symbols  = select_symbols(exchange, args.priority_only, args.min_volume)
+#     if not symbols:
+#         print("No symbols selected")
+#         return
+#     print(f"Scanning {len(symbols)} symbol(s) | pattern={args.pattern} | ema_mode={args.ema_mode} | sweep_bias={args.sweep_bias}")
+
+#     scanner = Scanner(exchange, symbols, args)
+#     print("Warming up (4h, 1h, 15m for every symbol) ...")
+#     took = refresh_many(scanner, symbols, TIMEFRAMES)
+#     print(f"Warm-up done in {took:.0f}s")
+
+#     hits = scan_all(scanner, symbols, args.dry_run, verbose=args.verbose)
+#     print(f"Initial scan: signals={hits}")
+#     if args.once:
+#         return
+
+#     print("Live loop started.")
+#     while True:
+#         boundary = next_15m_boundary()
+#         wake = boundary + timedelta(seconds=args.buffer)
+#         print(f"Next 15M close: {boundary.astimezone(IST):%H:%M IST}")
+#         if args.poll > 0:
+#             early_poll(scanner, symbols, args, until=wake)
+#         else:
+#             wait_until(wake)
+
+#         tfs = ["15m"]
+#         if boundary.minute == 0:
+#             tfs.append("1h")
+#         if boundary.minute == 0 and boundary.hour % 4 == 0:
+#             tfs.append("4h")
+#         took = refresh_many(scanner, symbols, tfs)
+#         hits = scan_all(scanner, symbols, args.dry_run)
+#         print(f"{datetime.now(IST):%H:%M:%S IST} confirmed scan ({', '.join(tfs)}): {took:.0f}s, signals={hits}")
+
 def run(args):
     exchange = build_exchange()
     symbols  = select_symbols(exchange, args.priority_only, args.min_volume)
@@ -494,34 +542,12 @@ def run(args):
     print(f"Scanning {len(symbols)} symbol(s) | pattern={args.pattern} | ema_mode={args.ema_mode} | sweep_bias={args.sweep_bias}")
 
     scanner = Scanner(exchange, symbols, args)
-    print("Warming up (4h, 1h, 15m for every symbol) ...")
-    took = refresh_many(scanner, symbols, TIMEFRAMES)
-    print(f"Warm-up done in {took:.0f}s")
-
+    
+    # Start scanning immediately (data fetched on the fly)
+    print("Starting live scan (fetching data on the fly)...")
     hits = scan_all(scanner, symbols, args.dry_run, verbose=args.verbose)
-    print(f"Initial scan: signals={hits}")
-    if args.once:
-        return
-
-    print("Live loop started.")
-    while True:
-        boundary = next_15m_boundary()
-        wake = boundary + timedelta(seconds=args.buffer)
-        print(f"Next 15M close: {boundary.astimezone(IST):%H:%M IST}")
-        if args.poll > 0:
-            early_poll(scanner, symbols, args, until=wake)
-        else:
-            wait_until(wake)
-
-        tfs = ["15m"]
-        if boundary.minute == 0:
-            tfs.append("1h")
-        if boundary.minute == 0 and boundary.hour % 4 == 0:
-            tfs.append("4h")
-        took = refresh_many(scanner, symbols, tfs)
-        hits = scan_all(scanner, symbols, args.dry_run)
-        print(f"{datetime.now(IST):%H:%M:%S IST} confirmed scan ({', '.join(tfs)}): {took:.0f}s, signals={hits}")
-
+    print(f"Scan complete: signals={hits}")
+    return
 
 # ------------------------------------------------------------------ CLI
 if __name__ == "__main__":

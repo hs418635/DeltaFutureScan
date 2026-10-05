@@ -39,6 +39,7 @@ from dotenv import load_dotenv
 load_dotenv()
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "")
+print(f"Telegram bot token: {'set' if BOT_TOKEN else 'not set'}, chat ID: {'set' if CHAT_ID else 'not set'}")
 
 PRIORITY = {"BTC", "ETH", "SOL", "XRP", "AAVE", "XAUT", "SPCXX", "GOOGLX",
             "TSLAX", "AMZNX", "NVDAX", "AAPLX", "METAX"}

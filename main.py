@@ -1,12 +1,11 @@
 """
 Delta India 15M entry scanner  (v3)
 
-Universe : EVERY active perpetual / future on Delta India (no volume filter by default).
-Bias     : 4H + 1H EMA state (used as a hard filter for the CROSS pattern, as information for SWEEP).
+Universe : the PRIORITY list by default (--no-priority-only scans every active perpetual / future on Delta India).
 Triggers (15M, two patterns, both on by default):
 
-  CROSS  – EMA9/EMA20 cross in the bias direction, scored on structure (pullback, trigger bar,
-           higher-low/lower-high, not over-extended). Needs 4H and 1H to agree.
+  CROSS  – EMA9/EMA20 cross on the 15M chart (either direction), scored on structure (pullback,
+           trigger bar, higher-low/lower-high, not over-extended).
 
   SWEEP  – the "liquidity sweep + impulse" entry:
              1. a wick takes out the prior swing low (long) / swing high (short) inside the last
@@ -44,8 +43,8 @@ print(f"Telegram bot token: {'set' if BOT_TOKEN else 'not set'}, chat ID: {'set'
 PRIORITY = {"BTC", "ETH", "SOL", "XRP", "AAVE", "XAUT", "SPCXX", "GOOGLX",
             "TSLAX", "AMZNX", "NVDAX", "AAPLX", "METAX"}
 
-TIMEFRAMES  = ["4h", "1h", "15m"]
-EMA_PERIODS = [9, 20, 100, 200]
+TIMEFRAMES  = ["15m"]
+EMA_PERIODS = [9, 20]
 ATR_PERIOD  = 14
 API_RETRIES = 2
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -106,21 +105,6 @@ def fmt_ts(ms):
     return f"{dt.astimezone(IST):%d-%b %H:%M IST}"
 
 
-# ------------------------------------------------------------------ bias
-def ema_bias(row, mode):
-    if mode == "920100":
-        if row["close"] > row["ema200"] and row["ema9"] > row["ema20"] > row["ema100"]:
-            return "LONG"
-        if row["close"] < row["ema200"] and row["ema9"] < row["ema20"] < row["ema100"]:
-            return "SHORT"
-        return None
-    if row["close"] > row["ema200"] and row["ema9"] > row["ema20"]:
-        return "LONG"
-    if row["close"] < row["ema200"] and row["ema9"] < row["ema20"]:
-        return "SHORT"
-    return None
-
-
 # ------------------------------------------------------------------ CROSS pattern
 def find_cross(df, direction, lookback):
     n = len(df) - 1
@@ -145,42 +129,36 @@ def swing_points(df, left=2, right=2):
     return highs, lows
 
 
-def score_cross(df, direction, cross_idx, mode, pullback_lookback, max_ext_atr):
+def score_cross(df, direction, cross_idx, pullback_lookback, max_ext_atr):
     score, reasons = 0, []
     cur, trig = df.iloc[-1], df.iloc[cross_idx]
     sign = 1 if direction == "LONG" else -1
 
-    ok_trend = sign * (cur["close"] - cur["ema200"]) > 0
-    if mode == "920100":
-        ok_trend = ok_trend and sign * (cur["close"] - cur["ema100"]) > 0
-    if ok_trend: score += 20; reasons.append("15m trend ok")
-    else:        reasons.append("15m against ema200")
-
     before = df.iloc[max(0, cross_idx - pullback_lookback):cross_idx]
     touched = ((before["low"] <= before["ema20"]) if direction == "LONG" else (before["high"] >= before["ema20"])).any()
-    if touched: score += 15; reasons.append("pullback to ema20")
+    if touched: score += 20; reasons.append("pullback to ema20")
     else:       reasons.append("no pullback")
 
     rng = trig["high"] - trig["low"]
     body_ratio = abs(trig["close"] - trig["open"]) / rng if rng > 0 else 0
     if sign * (trig["close"] - trig["open"]) > 0 and body_ratio >= 0.5 and sign * (trig["close"] - trig["ema9"]) > 0:
-        score += 20; reasons.append(f"strong trigger bar ({body_ratio:.0%})")
+        score += 25; reasons.append(f"strong trigger bar ({body_ratio:.0%})")
     else:
         reasons.append(f"weak trigger bar ({body_ratio:.0%})")
 
     highs, lows = swing_points(df.tail(80).reset_index(drop=True))
     if direction == "LONG":
-        if len(lows) >= 2 and lows[-1][1] > lows[-2][1]:   score += 20; reasons.append("higher low")
+        if len(lows) >= 2 and lows[-1][1] > lows[-2][1]:   score += 25; reasons.append("higher low")
         else:                                              reasons.append("no higher low")
         if len(highs) >= 2 and highs[-1][1] > highs[-2][1]: score += 10; reasons.append("higher high")
     else:
-        if len(highs) >= 2 and highs[-1][1] < highs[-2][1]: score += 20; reasons.append("lower high")
+        if len(highs) >= 2 and highs[-1][1] < highs[-2][1]: score += 25; reasons.append("lower high")
         else:                                               reasons.append("no lower high")
         if len(lows) >= 2 and lows[-1][1] < lows[-2][1]:   score += 10; reasons.append("lower low")
 
     if cur["atr"] > 0:
         ext = abs(cur["close"] - cur["ema20"]) / cur["atr"]
-        if ext <= max_ext_atr: score += 15; reasons.append(f"ext {ext:.1f} ATR ok")
+        if ext <= max_ext_atr: score += 20; reasons.append(f"ext {ext:.1f} ATR ok")
         else:                  reasons.append(f"over-extended {ext:.1f} ATR")
     return score, reasons
 
@@ -265,10 +243,6 @@ def find_sweep(df, direction, a):
              f"body {body_atr:.1f} ATR, {body_ratio:.0%} of range",
              f"volume {vol_ratio:.1f}x avg",
              f"ema9/20 {cross_state}"]
-    if sign * (trig["close"] - trig["ema200"]) > 0:
-        notes.append("closed through/above ema200" if direction == "LONG" else "closed through/below ema200")
-    else:
-        notes.append("still below ema200" if direction == "LONG" else "still above ema200")
 
     return {"level": level, "wick": wick, "sweep_ts": sweep_ts, "entry": entry, "stop": stop,
             "risk": risk, "cross_state": cross_state, "notes": notes,
@@ -295,8 +269,7 @@ def notify_telegram(sig):
               f"Target 1:1 : {sig['tp1']:.6g}",
               f"Target 1:2 : {sig['tp2']:.6g}",
               f"Target 1:3 : {sig['tp3']:.6g}",
-              f"Checks: {html.escape('; '.join(sig['reasons']))}",
-              f"Bias 4H={sig['bias4h'] or '-'}  1H={sig['bias1h'] or '-'}"]
+              f"Checks: {html.escape('; '.join(sig['reasons']))}"]
     try:
         r = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
                           json={"chat_id": CHAT_ID, "text": "\n".join(lines), "parse_mode": "HTML"}, timeout=10)
@@ -325,23 +298,18 @@ class Scanner:
         c = self.cache.get(symbol, {})
         if any(tf not in c for tf in TIMEFRAMES):
             return f"{symbol:<16} data missing"
-        b4 = ema_bias(c["4h"].iloc[-1], self.a.ema_mode) or "-"
-        b1 = ema_bias(c["1h"].iloc[-1], self.a.ema_mode) or "-"
         r = c["15m"].iloc[-1]
-        return f"{symbol:<16} 4H={b4:<5} 1H={b1:<5} 15m {'9>20' if r['ema9'] > r['ema20'] else '9<20'}  close={r['close']:.6g}"
+        return f"{symbol:<16} 15m {'9>20' if r['ema9'] > r['ema20'] else '9<20'}  close={r['close']:.6g}"
 
     def _plan(self, symbol, pattern, direction, df15, entry, stop, trigger_ts, reasons, early, extra=None, score=None):
         last = df15.iloc[-1]
         risk = abs(entry - stop)
         sign = 1 if direction == "LONG" else -1
-        c = self.cache[symbol]
         sig = {"symbol": symbol, "pattern": pattern, "direction": direction, "early": early,
                "score": score, "reasons": reasons, "trigger_bar_ts": trigger_ts,
                "entry": entry, "entry_zone": sorted([float(last["ema9"]), float(last["ema20"])]),
                "stop": stop, "risk_pct": risk / entry * 100,
                "tp1": entry + sign * 1 * risk, "tp2": entry + sign * 2 * risk, "tp3": entry + sign * 3 * risk,
-               "bias4h": ema_bias(c["4h"].iloc[-1], self.a.ema_mode),
-               "bias1h": ema_bias(c["1h"].iloc[-1], self.a.ema_mode),
                "ts": datetime.now(timezone.utc).isoformat()}
         if extra:
             sig.update(extra)
@@ -360,34 +328,31 @@ class Scanner:
         if any(tf not in c for tf in TIMEFRAMES):
             return []
         df15 = c["15m"]
-        b4 = ema_bias(c["4h"].iloc[-1], a.ema_mode)
-        b1 = ema_bias(c["1h"].iloc[-1], a.ema_mode)
         out = []
 
-        # ---- CROSS: needs 4H and 1H to agree
-        if a.pattern in ("cross", "both") and b4 and b4 == b1:
-            idx = find_cross(df15, b4, a.cross_lookback)
-            if idx is not None:
+        # ---- CROSS: EMA9/20 cross on 15M, either direction
+        if a.pattern in ("cross", "both"):
+            for direction in ("LONG", "SHORT"):
+                idx = find_cross(df15, direction, a.cross_lookback)
+                if idx is None:
+                    continue
                 ts = int(df15.iloc[idx]["timestamp"])
                 key = (symbol, "CROSS", early)
-                if self.alerted.get(key) != ts:
-                    score, reasons = score_cross(df15, b4, idx, a.ema_mode, a.pullback_lookback, a.max_ext_atr)
-                    if score >= a.min_score:
-                        entry = float(df15.iloc[-1]["close"])
-                        stop  = structure_stop(df15, b4, entry, a.stop_lookback, a.atr_buffer)
-                        if abs(entry - stop) > 0:
-                            self.alerted[key] = ts
-                            out.append(self._plan(symbol, "CROSS", b4, df15, entry, stop, ts, reasons, early, score=score))
-                    else:
-                        print(f"  {symbol} CROSS {b4} score {score} < {a.min_score}: {', '.join(reasons)}")
+                if self.alerted.get(key) == ts:
+                    continue
+                score, reasons = score_cross(df15, direction, idx, a.pullback_lookback, a.max_ext_atr)
+                if score < a.min_score:
+                    print(f"  {symbol} CROSS {direction} score {score} < {a.min_score}: {', '.join(reasons)}")
+                    continue
+                entry = float(df15.iloc[-1]["close"])
+                stop  = structure_stop(df15, direction, entry, a.stop_lookback, a.atr_buffer)
+                if abs(entry - stop) > 0:
+                    self.alerted[key] = ts
+                    out.append(self._plan(symbol, "CROSS", direction, df15, entry, stop, ts, reasons, early, score=score))
 
-        # ---- SWEEP: bias is optional (reversal pattern)
+        # ---- SWEEP: reversal pattern, either direction
         if a.pattern in ("sweep", "both"):
             for direction in ("LONG", "SHORT"):
-                if a.sweep_bias == "1h" and b1 != direction:
-                    continue
-                if a.sweep_bias == "both" and not (b1 == direction and b4 == direction):
-                    continue
                 res = find_sweep(df15, direction, a)
                 if not res:
                     continue
@@ -496,50 +461,13 @@ def early_poll(scanner, symbols, args, until):
         time.sleep(max(0, min(args.poll - took, remaining)))
 
 
-# def run(args):
-#     exchange = build_exchange()
-#     symbols  = select_symbols(exchange, args.priority_only, args.min_volume)
-#     if not symbols:
-#         print("No symbols selected")
-#         return
-#     print(f"Scanning {len(symbols)} symbol(s) | pattern={args.pattern} | ema_mode={args.ema_mode} | sweep_bias={args.sweep_bias}")
-
-#     scanner = Scanner(exchange, symbols, args)
-#     print("Warming up (4h, 1h, 15m for every symbol) ...")
-#     took = refresh_many(scanner, symbols, TIMEFRAMES)
-#     print(f"Warm-up done in {took:.0f}s")
-
-#     hits = scan_all(scanner, symbols, args.dry_run, verbose=args.verbose)
-#     print(f"Initial scan: signals={hits}")
-#     if args.once:
-#         return
-
-#     print("Live loop started.")
-#     while True:
-#         boundary = next_15m_boundary()
-#         wake = boundary + timedelta(seconds=args.buffer)
-#         print(f"Next 15M close: {boundary.astimezone(IST):%H:%M IST}")
-#         if args.poll > 0:
-#             early_poll(scanner, symbols, args, until=wake)
-#         else:
-#             wait_until(wake)
-
-#         tfs = ["15m"]
-#         if boundary.minute == 0:
-#             tfs.append("1h")
-#         if boundary.minute == 0 and boundary.hour % 4 == 0:
-#             tfs.append("4h")
-#         took = refresh_many(scanner, symbols, tfs)
-#         hits = scan_all(scanner, symbols, args.dry_run)
-#         print(f"{datetime.now(IST):%H:%M:%S IST} confirmed scan ({', '.join(tfs)}): {took:.0f}s, signals={hits}")
-
 def run(args):
     exchange = build_exchange()
     symbols  = select_symbols(exchange, args.priority_only, args.min_volume)
     if not symbols:
         print("No symbols selected")
         return
-    print(f"Scanning {len(symbols)} symbol(s) | pattern={args.pattern} | ema_mode={args.ema_mode} | sweep_bias={args.sweep_bias}")
+    print(f"Scanning {len(symbols)} symbol(s) | pattern={args.pattern}")
 
     scanner = Scanner(exchange, symbols, args)
     
@@ -556,8 +484,10 @@ if __name__ == "__main__":
     p.add_argument("--dry-run", action="store_true", help="Print signals, no Telegram.")
     p.add_argument("--verbose", action="store_true", help="Print one status line per symbol on the initial scan.")
     # universe
-    p.add_argument("--priority-only", action=argparse.BooleanOptionalAction, default=False,
-                   help="Only the PRIORITY list. Default: every active futures pair.")
+    # p.add_argument("--priority-only", action=argparse.BooleanOptionalAction, default=False,
+    #                help="Only the PRIORITY list. Default: every active futures pair.")
+    p.add_argument("--priority-only", action=argparse.BooleanOptionalAction, default=True,
+               help="Only the PRIORITY list (default). Use --no-priority-only for every active futures pair.")
     p.add_argument("--min-volume", type=float, default=0,
                    help="Skip pairs under this 24h quote volume. 0 = no filter (all pairs).")
     p.add_argument("--candles", type=int, default=300)
@@ -566,7 +496,6 @@ if __name__ == "__main__":
     p.add_argument("--buffer", type=int, default=8, help="Seconds after a 15M close before the confirmed fetch.")
     # patterns
     p.add_argument("--pattern", choices=["cross", "sweep", "both"], default="both")
-    p.add_argument("--ema-mode", choices=["920", "920100"], default="920")
     # cross
     p.add_argument("--cross-lookback", type=int, default=2)
     p.add_argument("--min-score", type=int, default=60)
@@ -574,8 +503,6 @@ if __name__ == "__main__":
     p.add_argument("--max-ext-atr", type=float, default=1.5)
     p.add_argument("--stop-lookback", type=int, default=10)
     # sweep
-    p.add_argument("--sweep-bias", choices=["off", "1h", "both"], default="off",
-                   help="Require 1H (or 4H+1H) bias to agree with the sweep direction. Default off: it is a reversal pattern.")
     p.add_argument("--level-lookback", type=int, default=30, help="Bars that define the swing level being swept.")
     p.add_argument("--sweep-window", type=int, default=6, help="Recent bars in which the sweep wick must occur.")
     p.add_argument("--min-body-atr", type=float, default=1.0, help="Impulse bar body must be >= this x ATR.")
